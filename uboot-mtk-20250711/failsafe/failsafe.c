@@ -999,8 +999,17 @@ int start_web_failsafe(void)
 
 	if (IS_ENABLED(CONFIG_MTK_DHCPD))
 		mtk_dhcpd_start();
-	if (IS_ENABLED(CONFIG_MTK_TELNETD))
-		mtk_telnetd_start(23);
+	if (IS_ENABLED(CONFIG_MTK_TELNETD)) {
+		const char *port_str = env_get("telnet_port");
+		unsigned long port = 23;
+
+		if (port_str) {
+			port = simple_strtoul(port_str, NULL, 10);
+			if (port < 1 || port > 65535)
+				port = 23;
+		}
+		mtk_telnetd_start((u16)port);
+	}
 
 	failsafe_httpd_running = true;
 	net_loop(MTK_TCP);

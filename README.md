@@ -326,6 +326,10 @@ fw_setenv failsafe 1 # Reboot to failsafe mode in next boot
 
 > need install `uboot-envtools` and configure `package/boot/uboot-envtools/files/mediatek_filogic` correctly for your device before compile firmware, otherwise the environment variables will not work.
 
+### Telnet support
+
+You can connect to the device with telnet, default port is 23, and you can set the `telnet_port` environment variable to change the port.
+
 ---
 
 <a id="ENDNOTE"></a>
