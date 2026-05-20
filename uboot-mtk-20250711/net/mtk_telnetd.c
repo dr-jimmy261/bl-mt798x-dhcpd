@@ -59,6 +59,7 @@ DECLARE_GLOBAL_DATA_PTR;
 #define TELNETD_INBUF_SIZE	2048	/* Raw TCP rx buffer		*/
 #define TELNETD_OUTBUF_SIZE	8192	/* Max console output per cmd	*/
 #define TELNETD_CMD_MAX		512	/* Max command line length	*/
+#define TELNETD_EDIT_BUF_SIZE	512	/* Max accumulated edit responses */
 
 /* ------------------------------------------------------------------
  * Session state
@@ -82,6 +83,9 @@ struct telnetd_pdata {
 	char *outbuf;		/* malloc'd output buffer	*/
 	u32 outbuf_len;
 	bool outbuf_pending;
+
+	char edit_outbuf[TELNETD_EDIT_BUF_SIZE];
+	u32 edit_outbuf_len;
 };
 
 /* ------------------------------------------------------------------
@@ -113,7 +117,7 @@ static const char *telnetd_get_prompt(void);
  * send failures (the TCP stack only allows one outstanding send).
  */
 static const char telnet_greeting_prefix[] = {
-	IAC, WONT, TELOPT_ECHO,
+	IAC, WILL, TELOPT_ECHO,
 	IAC, WILL, TELOPT_SGA,
 	IAC, DO,   TELOPT_NAWS,
 	'\r', '\n',
@@ -124,7 +128,7 @@ static const char telnet_greeting_prefix[] = {
 };
 
 static const char telnet_greeting_fallback[] = {
-	IAC, WONT, TELOPT_ECHO,
+	IAC, WILL, TELOPT_ECHO,
 	IAC, WILL, TELOPT_SGA,
 	IAC, DO,   TELOPT_NAWS,
 	'\r', '\n',
@@ -440,6 +444,22 @@ static void telnetd_execute(struct mtk_tcp_cb_data *cbd,
  * ------------------------------------------------------------------ */
 
 /**
+ * telnetd_flush_edit_outbuf() – send accumulated edit responses
+ * (backspace erasures, ^C, new prompts) to the client in a single
+ * TCP segment and reset the accumulator.
+ */
+static void telnetd_flush_edit_outbuf(struct mtk_tcp_cb_data *cbd,
+				      struct telnetd_pdata *pdata)
+{
+	if (!pdata->edit_outbuf_len)
+		return;
+
+	if (!mtk_tcp_send_data(cbd->conn, pdata->edit_outbuf,
+			       pdata->edit_outbuf_len))
+		pdata->edit_outbuf_len = 0;
+}
+
+/**
  * telnetd_process_input() – strip telnet IAC escapes from the buffered
  * raw input and execute commands on every complete line (delimited by
  * CR-NUL, CR-LF, bare CR, or bare LF).
@@ -522,19 +542,154 @@ static void telnetd_process_input(struct mtk_tcp_cb_data *cbd)
 			continue;
 		}
 
+		/* ---- ANSI escape sequences (arrow keys, etc.) ---- */
+		if (c == '\x1b') {
+			if (i + 1 < pdata->inbuf_size &&
+			    pdata->inbuf[i + 1] == '[') {
+				/* CSI: ESC [ ... terminator (0x40-0x7E) */
+				u32 j = i + 2;
+
+				while (j < pdata->inbuf_size) {
+					unsigned char t = pdata->inbuf[j];
+
+					if (t >= 0x40 && t <= 0x7e) {
+						j++;
+						break; /* found terminator */
+					}
+					if (t < 0x20 || t > 0x2f)
+						break; /* malformed */
+					j++;
+				}
+				if (j > i + 2) {
+					i = j;
+					continue;
+				}
+				/* Incomplete — keep for next rx */
+				break;
+			}
+			/* Lone ESC or unknown escape — skip it */
+			i++;
+			continue;
+		}
+
 		/* ---- Backspace / DEL ---- */
 		if (c == '\b' || c == 0x7f) {
-			if (pdata->cmdlen > 0)
+			if (pdata->cmdlen > 0) {
 				pdata->cmdlen--;
+				/* Erase character on client screen */
+				if (pdata->edit_outbuf_len + 3 <=
+				    TELNETD_EDIT_BUF_SIZE) {
+					pdata->edit_outbuf[
+					  pdata->edit_outbuf_len++] = '\b';
+					pdata->edit_outbuf[
+					  pdata->edit_outbuf_len++] = ' ';
+					pdata->edit_outbuf[
+					  pdata->edit_outbuf_len++] = '\b';
+				}
+			}
+			i++;
+			continue;
+		}
+
+		/* ---- Control characters ---- */
+		if (c == '\x03') {
+			/* Ctrl+C — clear line, print ^C + new prompt */
+			const char *prompt = telnetd_get_prompt();
+			u32 plen = strlen(prompt);
+			u32 need = 6 + plen;
+
+			pdata->cmdlen = 0;
+			pdata->cmdbuf[0] = '\0';
+			if (pdata->edit_outbuf_len + need <=
+			    TELNETD_EDIT_BUF_SIZE) {
+				pdata->edit_outbuf[
+				  pdata->edit_outbuf_len++] = '^';
+				pdata->edit_outbuf[
+				  pdata->edit_outbuf_len++] = 'C';
+				pdata->edit_outbuf[
+				  pdata->edit_outbuf_len++] = '\r';
+				pdata->edit_outbuf[
+				  pdata->edit_outbuf_len++] = '\n';
+				memcpy(pdata->edit_outbuf +
+				       pdata->edit_outbuf_len,
+				       prompt, plen);
+				pdata->edit_outbuf_len += plen;
+			}
+			i++;
+			continue;
+		}
+
+		if (c == '\x15') {
+			/* Ctrl+U — clear entire line */
+			while (pdata->cmdlen > 0 &&
+			       pdata->edit_outbuf_len + 3 <=
+			       TELNETD_EDIT_BUF_SIZE) {
+				pdata->cmdlen--;
+				pdata->edit_outbuf[
+				  pdata->edit_outbuf_len++] = '\b';
+				pdata->edit_outbuf[
+				  pdata->edit_outbuf_len++] = ' ';
+				pdata->edit_outbuf[
+				  pdata->edit_outbuf_len++] = '\b';
+			}
+			pdata->cmdlen = 0;
+			pdata->cmdbuf[0] = '\0';
+			i++;
+			continue;
+		}
+
+		if (c == '\x17') {
+			/* Ctrl+W — delete previous word */
+			while (pdata->cmdlen > 0 &&
+			       pdata->cmdbuf[pdata->cmdlen - 1] == ' ') {
+				if (pdata->edit_outbuf_len + 3 >
+				    TELNETD_EDIT_BUF_SIZE)
+					break;
+				pdata->cmdlen--;
+				pdata->edit_outbuf[
+				  pdata->edit_outbuf_len++] = '\b';
+				pdata->edit_outbuf[
+				  pdata->edit_outbuf_len++] = ' ';
+				pdata->edit_outbuf[
+				  pdata->edit_outbuf_len++] = '\b';
+			}
+			while (pdata->cmdlen > 0 &&
+			       pdata->cmdbuf[pdata->cmdlen - 1] != ' ') {
+				if (pdata->edit_outbuf_len + 3 >
+				    TELNETD_EDIT_BUF_SIZE)
+					break;
+				pdata->cmdlen--;
+				pdata->edit_outbuf[
+				  pdata->edit_outbuf_len++] = '\b';
+				pdata->edit_outbuf[
+				  pdata->edit_outbuf_len++] = ' ';
+				pdata->edit_outbuf[
+				  pdata->edit_outbuf_len++] = '\b';
+			}
+			i++;
+			continue;
+		}
+
+		if (c < 0x20) {
+			/* Other control chars (excluding handled above) */
 			i++;
 			continue;
 		}
 
 		/* ---- Regular character ---- */
-		if (pdata->cmdlen < TELNETD_CMD_MAX - 1)
+		if (pdata->cmdlen < TELNETD_CMD_MAX - 1) {
 			pdata->cmdbuf[pdata->cmdlen++] = c;
+			/* Echo back to client (WILL ECHO mode) */
+			if (pdata->edit_outbuf_len <
+			    TELNETD_EDIT_BUF_SIZE)
+				pdata->edit_outbuf[
+				  pdata->edit_outbuf_len++] = c;
+		}
 		i++;
 	}
+
+	/* Flush accumulated edit responses (backspace erasures, etc.) */
+	telnetd_flush_edit_outbuf(cbd, pdata);
 
 	/* Remove consumed bytes from the raw buffer */
 	if (i > 0) {
