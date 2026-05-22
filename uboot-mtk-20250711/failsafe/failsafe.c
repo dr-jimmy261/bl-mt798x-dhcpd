@@ -51,6 +51,8 @@ static bool failsafe_httpd_running;
 
 #ifdef CONFIG_MEDIATEK_MULTI_MTD_LAYOUT
 #define MTD_LAYOUTS_MAXLEN	128
+#define MTD_LAYOUT_CUSTOM_LABEL	"custom"
+#define MTD_LAYOUT_CUSTOM_ENV	"mtd_layout_custom"
 static char mtd_layout_label[MTD_LAYOUTS_MAXLEN];
 static bool mtd_layout_save_pending;
 const char *get_mtd_layout_label(void);
@@ -396,11 +398,13 @@ static void sysinfo_handler(enum httpd_uri_handler_status status,
 #ifdef CONFIG_MEDIATEK_MULTI_MTD_LAYOUT
 	{
 		const char *cur = get_mtd_layout_label();
+		const char *custom_parts = env_get(MTD_LAYOUT_CUSTOM_ENV);
 		char esc_cur[128];
 		const char *cur_parts = NULL;
 		char esc_cur_parts[512];
 		ofnode node, layout;
 		bool first = true;
+		bool custom_seen = false;
 
 		json_escape(esc_cur, sizeof(esc_cur), cur ? cur : "");
 		len += snprintf(buf + len, left - len,
@@ -418,6 +422,11 @@ static void sysinfo_handler(enum httpd_uri_handler_status status,
 
 				if (!label)
 					continue;
+				if (!strcmp(label, MTD_LAYOUT_CUSTOM_LABEL)) {
+					custom_seen = true;
+					if (custom_parts && custom_parts[0])
+						parts = custom_parts;
+				}
 				json_escape(esc_label, sizeof(esc_label), label);
 				json_escape(esc_parts, sizeof(esc_parts), parts ? parts : "");
 				if (cur && !strcmp(label, cur))
@@ -427,9 +436,31 @@ static void sysinfo_handler(enum httpd_uri_handler_status status,
 					first ? "" : ",", esc_label, esc_parts);
 				first = false;
 			}
+			if (custom_parts && custom_parts[0] && !custom_seen) {
+				char esc_parts[512];
+
+				json_escape(esc_parts, sizeof(esc_parts), custom_parts);
+				if (cur && !strcmp(cur, MTD_LAYOUT_CUSTOM_LABEL))
+					cur_parts = custom_parts;
+				len += snprintf(buf + len, left - len,
+					"%s{\"label\":\"%s\",\"parts\":\"%s\"}",
+					first ? "" : ",", MTD_LAYOUT_CUSTOM_LABEL,
+					esc_parts);
+			}
 			len += snprintf(buf + len, left - len, "],");
 		} else {
-			len += snprintf(buf + len, left - len, "\"layouts\":[],");
+			if (custom_parts && custom_parts[0]) {
+				char esc_parts[512];
+
+				json_escape(esc_parts, sizeof(esc_parts), custom_parts);
+				if (cur && !strcmp(cur, MTD_LAYOUT_CUSTOM_LABEL))
+					cur_parts = custom_parts;
+				len += snprintf(buf + len, left - len,
+					"\"layouts\":[{\"label\":\"%s\",\"parts\":\"%s\"}],",
+					MTD_LAYOUT_CUSTOM_LABEL, esc_parts);
+			} else {
+				len += snprintf(buf + len, left - len, "\"layouts\":[],");
+			}
 		}
 
 		json_escape(esc_cur_parts, sizeof(esc_cur_parts), cur_parts ? cur_parts : "");
@@ -942,20 +973,45 @@ static void html_handler(enum httpd_uri_handler_status status,
 }
 
 #ifdef CONFIG_MEDIATEK_MULTI_MTD_LAYOUT
+static void append_mtdlayout_label(char *buf, size_t size, const char *label)
+{
+	size_t len;
+
+	if (!label || !label[0])
+		return;
+
+	len = strlen(buf);
+	if (len >= size - 1)
+		return;
+
+	snprintf(buf + len, size - len, "%s;", label);
+}
+
 static const char *get_mtdlayout_str(void)
 {
 	static char mtd_layout_str[MTD_LAYOUTS_MAXLEN];
+	const char *custom_parts = env_get(MTD_LAYOUT_CUSTOM_ENV);
 	ofnode node, layout;
+	bool custom_seen = false;
 
-	sprintf(mtd_layout_str, "%s;", get_mtd_layout_label());
+	snprintf(mtd_layout_str, sizeof(mtd_layout_str), "%s;",
+		 get_mtd_layout_label());
 
 	node = ofnode_path("/mtd-layout");
 	if (ofnode_valid(node) && ofnode_get_child_count(node)) {
 		ofnode_for_each_subnode(layout, node) {
-			strcat(mtd_layout_str, ofnode_read_string(layout, "label"));
-			strcat(mtd_layout_str, ";");
+			const char *label = ofnode_read_string(layout, "label");
+
+			if (label && !strcmp(label, MTD_LAYOUT_CUSTOM_LABEL))
+				custom_seen = true;
+			append_mtdlayout_label(mtd_layout_str,
+					       sizeof(mtd_layout_str), label);
 		}
 	}
+
+	if (custom_parts && custom_parts[0] && !custom_seen)
+		append_mtdlayout_label(mtd_layout_str, sizeof(mtd_layout_str),
+				       MTD_LAYOUT_CUSTOM_LABEL);
 
 	return mtd_layout_str;
 }
