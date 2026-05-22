@@ -1,6 +1,6 @@
 # MT798 IP Address Summary
 
-Generated: 2026-05-16 10:37:36
+Generated: 2026-05-22 16:24:39
 
 This document lists mt798* defconfigs whose `CONFIG_IPADDR` value is not `192.168.1.1`.
 
@@ -8,7 +8,8 @@ This document lists mt798* defconfigs whose `CONFIG_IPADDR` value is not `192.16
 
 | Filename | Model | IPADDR | USE_IPADDR | NET_FORCE_IPADDR |
 |---|---|---|---|---|
-| _default-only configs omitted_ | 56 file(s) use `192.168.1.1` | - | - | - |
+| _default-only configs omitted_ | 57 file(s) use `192.168.1.1` | - | - | - |
+| `mt7981_bt_r320_defconfig` | bt_r320 | 192.168.8.1 | y | y |
 | `mt7981_ruijie_rg-x30e-pro_defconfig` | ruijie_rg-x30e-pro | 192.168.110.1 | y | y |
 | `mt7981_ruijie_rg-x30e-pro_multi_layout_defconfig` | ruijie_rg-x30e-pro_multi_layout | 192.168.110.1 | y | y |
 | `mt7981_ruijie_rg-x30e_defconfig` | ruijie_rg-x30e | 192.168.110.1 | y | y |
@@ -30,12 +31,13 @@ This document lists mt798* defconfigs whose `CONFIG_IPADDR` value is not `192.16
 
 ## MT7987 Platform
 
-All 11 configuration files use the default `CONFIG_IPADDR=192.168.1.1`.
+All 12 configuration files use the default `CONFIG_IPADDR=192.168.1.1`.
 
 | Filename | Model | IPADDR | USE_IPADDR | NET_FORCE_IPADDR |
 |---|---|---|---|---|
 | `mt7987_airpi_e87n_defconfig` | airpi_e87n | 192.168.1.1 | y | - |
 | `mt7987_airpi_h5000m_defconfig` | airpi_h5000m | 192.168.1.1 | y | - |
+| `mt7987_airpi_h5000mifi_defconfig` | airpi_h5000mifi | 192.168.1.1 | y | - |
 | `mt7987_emmc_rfb_defconfig` | emmc_rfb | 192.168.1.1 | y | - |
 | `mt7987_mangopi_m87k_defconfig` | mangopi_m87k | 192.168.1.1 | y | - |
 | `mt7987_nor_emmc_rfb_defconfig` | nor_emmc_rfb | 192.168.1.1 | y | - |
