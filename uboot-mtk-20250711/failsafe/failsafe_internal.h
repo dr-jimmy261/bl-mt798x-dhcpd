@@ -15,6 +15,7 @@
 
 #include <net/mtk_httpd.h>
 #include <linux/types.h>
+#include "failsafe_helpers.h"
 
 size_t json_escape(char *dst, size_t dst_sz, const char *src);
 
