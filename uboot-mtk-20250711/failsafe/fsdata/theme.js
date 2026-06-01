@@ -28,6 +28,8 @@
     const TRANSITION_DURATION_MS = 620;
     const HEX_SHORT = /^[0-9a-f]{3}$/i;
     const HEX_FULL  = /^[0-9a-f]{6}$/i;
+    const ACCENT_PRESETS = ["#2563eb", "#0ea5e9", "#14b8a6", "#10b981", "#f59e0b", "#ef4444", "#ec4899", "#a855f7"];
+    const THEME_COLOR_RAINBOW = "rainbow";
 
     /* ── Preferences ────────────────────────────────────────── */
     let prefersReducedMotion = false;
@@ -246,13 +248,18 @@
         };
 
         /* apply cached accent color */
-        const accent = normalizeHex(cachedAccent);
+        const resolvedAccent = (cachedAccent === THEME_COLOR_RAINBOW)
+            ? ACCENT_PRESETS[Math.floor(Math.random() * ACCENT_PRESETS.length)]
+            : cachedAccent;
+        const accent = normalizeHex(resolvedAccent);
         const rgb = accent ? hexToRgb(accent) : null;
         if (accent && rgb) {
             root.style.setProperty("--primary", accent);
             root.style.setProperty("--primary-rgb", `${rgb.r}, ${rgb.g}, ${rgb.b}`);
             root.style.setProperty("--primary-2", blendToWhite(accent, 0.28));
             applyThemeColorMeta(accent);
+            /* expose resolved accent for main.js so it can update controls */
+            window.__failsafeThemeAccent = accent;
         }
 
         /* re-evaluate reduced motion if OS preference changes post-load */

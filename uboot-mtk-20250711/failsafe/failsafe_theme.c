@@ -23,6 +23,7 @@
 
 #define THEME_COLOR_ENV "failsafe_theme_color"
 #define THEME_COLOR_MAX_LEN 8
+#define THEME_COLOR_RAINBOW "rainbow"
 #define THEME_MODE_ENV "failsafe_theme_mode"
 #define THEME_MODE_MAX_LEN 8
 #define THEME_DARK_VARIANT_ENV "failsafe_theme_dark_variant"
@@ -197,8 +198,11 @@ void theme_get_handler(enum httpd_uri_handler_status status,
 	}
 
 	val = env_get(THEME_COLOR_ENV);
-	if (!val || failsafe_theme_normalize_hex(val, color, sizeof(color)))
+	if (val && !strcmp(val, THEME_COLOR_RAINBOW)) {
+		strlcpy(color, THEME_COLOR_RAINBOW, sizeof(color));
+	} else if (!val || failsafe_theme_normalize_hex(val, color, sizeof(color))) {
 		color[0] = '\0';
+	}
 
 	theme = env_get(THEME_MODE_ENV);
 	if (!failsafe_theme_valid_mode(theme))
@@ -266,6 +270,11 @@ void theme_set_handler(enum httpd_uri_handler_status status,
 	if (color) {
 		if (!color[0]) {
 			ret = env_set(THEME_COLOR_ENV, NULL);
+			if (ret)
+				goto out_free;
+			changed = true;
+		} else if (!strcmp(color, THEME_COLOR_RAINBOW)) {
+			ret = env_set(THEME_COLOR_ENV, THEME_COLOR_RAINBOW);
 			if (ret)
 				goto out_free;
 			changed = true;

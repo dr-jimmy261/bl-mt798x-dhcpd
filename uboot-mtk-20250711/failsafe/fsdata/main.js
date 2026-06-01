@@ -149,6 +149,7 @@ function setTheme(themeMode, options = {}) {
 
 const THEME_COLOR_ENV_KEY = "failsafe_theme_color";
 const THEME_COLOR_CACHE_KEY = "failsafe_theme_color_cache";
+const THEME_COLOR_RAINBOW = "rainbow";
 const ACCENT_PRESETS = ["#2563eb", "#0ea5e9", "#14b8a6", "#10b981", "#f59e0b", "#ef4444", "#ec4899", "#a855f7"];
 const THEME_MODE_ENV_KEY = "failsafe_theme_mode";
 const THEME_DARK_VARIANT_ENV_KEY = "failsafe_theme_dark_variant";
@@ -185,7 +186,14 @@ function hexToRgb(hex) {
     };
 }
 
+function pickRandomPreset() {
+    return ACCENT_PRESETS[Math.floor(Math.random() * ACCENT_PRESETS.length)];
+}
+
 function applyAccentVars(color) {
+    if (color === THEME_COLOR_RAINBOW) {
+        color = pickRandomPreset();
+    }
     const normalizedColor = normalizeHexColor(color);
     if (!normalizedColor) return false;
     const rgb = hexToRgb(normalizedColor);
@@ -219,31 +227,63 @@ function ensureThemeColorMeta(color) {
 }
 
 function updateAccentControls(color) {
-    const normalizedColor = normalizeHexColor(color);
+    const isRainbow = color === THEME_COLOR_RAINBOW;
+    const normalizedColor = isRainbow ? null : normalizeHexColor(color);
     const colorPicker = document.getElementById("accent_color_picker");
     const colorInput  = document.getElementById("accent_color_input");
-    if (colorPicker && normalizedColor) colorPicker.value = normalizedColor;
-    if (colorInput  && normalizedColor) colorInput.value  = normalizedColor;
+
+    if (colorPicker) {
+        if (isRainbow) colorPicker.value = "#000000";
+        else if (normalizedColor) colorPicker.value = normalizedColor;
+    }
+    if (colorInput) {
+        if (isRainbow) colorInput.value = "";
+        else if (normalizedColor) colorInput.value = normalizedColor;
+    }
 
     for (const swatch of document.querySelectorAll(".color-swatch")) {
         const presetColor = String(swatch.dataset?.color ?? "").toLowerCase();
         swatch.classList.toggle("active", !!normalizedColor && presetColor === normalizedColor);
+    }
+
+    /* rainbow swatch active state */
+    const rainbowSwatch = document.querySelector(".color-swatch-rainbow");
+    if (rainbowSwatch) {
+        rainbowSwatch.classList.toggle("active", isRainbow);
     }
 }
 
 function applyAccentColor(color) {
     const isApplied = applyAccentVars(color);
     if (!isApplied) return false;
+    /* When rainbow is selected, update controls with the original raw value
+     * so the rainbow swatch highlights correctly. */
     updateAccentControls(color);
     return true;
 }
 
 try {
     const cachedColor = localStorage.getItem(THEME_COLOR_CACHE_KEY);
-    if (cachedColor) applyAccentVars(cachedColor);
+    if (cachedColor) {
+        if (cachedColor === THEME_COLOR_RAINBOW) {
+            applyAccentVars(pickRandomPreset());
+        } else {
+            applyAccentVars(cachedColor);
+        }
+    }
 } catch { /* ignore */ }
 
 async function saveThemeColor(color) {
+    if (color === THEME_COLOR_RAINBOW) {
+        try { localStorage.setItem(THEME_COLOR_CACHE_KEY, THEME_COLOR_RAINBOW); }
+        catch { /* ignore */ }
+        try {
+            const formData = new FormData();
+            formData.append("color", THEME_COLOR_RAINBOW);
+            await fetch("/theme/set", { method: "POST", body: formData });
+        } catch { /* network errors silently dropped */ }
+        return;
+    }
     const normalizedColor = normalizeHexColor(color);
     if (!normalizedColor) return;
     try { localStorage.setItem(THEME_COLOR_CACHE_KEY, normalizedColor); }
@@ -269,14 +309,28 @@ async function saveThemeMode(theme) {
 async function loadThemeColor() {
     let currentColor = null;
     let loadedFromEnv = false;
+    let isRainbow = false;
     try {
         const response = await fetch("/theme/get", { method: "GET" });
         if (response?.ok) {
             const payload = await response.json();
-            currentColor = normalizeHexColor(payload?.color);
-            loadedFromEnv = !!currentColor;
+            if (payload?.color === THEME_COLOR_RAINBOW) {
+                isRainbow = true;
+                loadedFromEnv = true;
+            } else {
+                currentColor = normalizeHexColor(payload?.color);
+                loadedFromEnv = !!currentColor;
+            }
         }
     } catch { /* ignore */ }
+
+    if (isRainbow && loadedFromEnv) {
+        /* server says rainbow — trigger a re-randomize and apply */
+        applyAccentColor(THEME_COLOR_RAINBOW);
+        try { localStorage.setItem(THEME_COLOR_CACHE_KEY, THEME_COLOR_RAINBOW); }
+        catch { /* ignore */ }
+        return;
+    }
 
     if (!currentColor) {
         try {
@@ -391,6 +445,20 @@ function appendAccentControls(container) {
         });
         presets.appendChild(swatchButton);
     }
+
+    /* rainbow swatch */
+    const rainbowSwatch = document.createElement("button");
+    rainbowSwatch.type = "button";
+    rainbowSwatch.className = "color-swatch color-swatch-rainbow";
+    rainbowSwatch.dataset.color = THEME_COLOR_RAINBOW;
+    rainbowSwatch.setAttribute("data-i18n-attr", "title:theme.color.rainbow");
+    rainbowSwatch.title = t("theme.color.rainbow");
+    rainbowSwatch.setAttribute("aria-label", t("theme.color.rainbow"));
+    rainbowSwatch.addEventListener("click", () => {
+        applyAccentColor(THEME_COLOR_RAINBOW);
+        saveThemeColor(THEME_COLOR_RAINBOW);
+    });
+    presets.appendChild(rainbowSwatch);
 
     const inputs = document.createElement("div");
     inputs.className = "color-inputs";

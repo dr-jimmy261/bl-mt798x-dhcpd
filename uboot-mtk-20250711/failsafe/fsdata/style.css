@@ -517,6 +517,15 @@ body {
         0 1px 0 var(--inset-highlight) inset;
 }
 
+.color-swatch-rainbow {
+    background: conic-gradient(
+        from 0deg,
+        #f87171, #fb923c, #fbbf24, #4ade80,
+        #38bdf8, #818cf8, #c084fc, #f472b6,
+        #f87171
+    );
+}
+
 .color-inputs {
     display: grid;
     grid-template-columns: 1fr auto;
