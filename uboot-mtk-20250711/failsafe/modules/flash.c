@@ -37,9 +37,6 @@
 
 #include "../failsafe_internal.h"
 
-#define FLASH_EDIT_MAX_READ	4096
-#define FLASH_EDIT_MAX_WRITE	(64 * 1024)
-
 /* ------------------------------------------------------------------ */
 /*  Static helpers                                                     */
 /* ------------------------------------------------------------------ */
@@ -86,8 +83,6 @@ static int flash_parse_hex(const char *in, u8 **out, size_t *out_len)
 		return -EINVAL;
 
 	bytes = digits / 2;
-	if (bytes > FLASH_EDIT_MAX_WRITE)
-		return -E2BIG;
 
 	buf = malloc(bytes);
 	if (!buf)
@@ -476,7 +471,7 @@ void flash_handler(enum httpd_uri_handler_status status,
 			goto bad_range;
 
 		len = (size_t)(end - start);
-		if (!len || len > FLASH_EDIT_MAX_READ)
+		if (!len)
 			goto bad_req;
 
 		ret = flash_open_target(storage_sel, target_name, &tgt);

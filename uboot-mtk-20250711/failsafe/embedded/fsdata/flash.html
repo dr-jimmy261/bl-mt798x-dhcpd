@@ -97,6 +97,14 @@
 						</div>
 					</div>
 
+				<div id="flash_page_controls" class="hex-page-controls" style="display:none;">
+					<button id="flash_page_prev" class="button button-sm"
+						onclick="flashGoToPage(flashCurrentPage - 1)">&#9664; Prev</button>
+					<span id="flash_page_info" class="page-info"></span>
+					<button id="flash_page_next" class="button button-sm"
+						onclick="flashGoToPage(flashCurrentPage + 1)">Next &#9654;</button>
+				</div>
+
 					<div class="backup-form" style="margin-top: 16px;">
 						<div class="form-row form-row-2">
 							<div class="field">
@@ -117,17 +125,17 @@
 						</div>
 					</div>
 				</div>
-				<div class="card-foot">
-					<div class="i w">
-						<strong data-i18n="common.warnings">WARNINGS</strong>
-						<ul>
-							<li data-i18n="flash.warn.1">writing wrong data may brick the device</li>
-							<li data-i18n="flash.warn.2">always double-check target and range</li>
-							<li data-i18n="flash.warn.3">do not power off during write/restore</li>
-							<li data-i18n="flash.warn.4">max size in once read/write is 4KiB</li>
-						</ul>
-					</div>
+			<div class="card-foot">
+				<div class="i w">
+					<strong data-i18n="common.warnings">WARNINGS</strong>
+					<ul>
+						<li data-i18n="flash.warn.1">writing wrong data may brick the device</li>
+						<li data-i18n="flash.warn.2">always double-check target and range</li>
+						<li data-i18n="flash.warn.3">do not power off during write/restore</li>
+						<li data-i18n="flash.warn.4">large reads/writes may be slow &amp; risk OOM</li>
+					</ul>
 				</div>
+			</div>
 			</div>
 			<div id="version"></div>
 		</div>

@@ -1548,6 +1548,30 @@ ul li {
     align-items: center;
 }
 
+.hex-page-controls {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    width: min(720px, 100%);
+    margin: 8px auto 0;
+    padding: 4px 0;
+}
+
+.hex-page-controls .button-sm {
+    padding: 4px 14px;
+    font-size: 0.78rem;
+    min-width: 60px;
+}
+
+.page-info {
+    font-family: var(--font-mono);
+    font-size: 0.82rem;
+    color: var(--muted);
+    min-width: 64px;
+    text-align: center;
+}
+
 /* ── Console ───────────────────────────────────────────────────── */
 .console-card {
     padding: 0;
