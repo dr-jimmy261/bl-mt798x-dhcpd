@@ -140,12 +140,6 @@ function flashAlignInput(keepCaret) {
     flashRenderHexViews();
 }
 
-function flashFormatData() {
-    if (!confirm(t("flash.confirm.format"))) return;
-    flashAlignInput(false);
-    flashSetStatus(t("flash.status.formatted"))
-}
-
 function flashSnapCaret() {
     const dataElement = document.getElementById("flash_data");
     if (!dataElement) return;
@@ -342,7 +336,7 @@ function flashInit() {
     flashSetStatus("");
 
     if (dataElement) {
-        dataElement.addEventListener("input", () => { flashAlignInput(true); });
+        dataElement.addEventListener("input", () => { flashSnapCaret(); flashRenderHexViews(); });
         dataElement.addEventListener("blur", () => { flashAlignInput(false); });
         dataElement.addEventListener("click", flashSnapCaret);
         dataElement.addEventListener("keyup", flashSnapCaret);
