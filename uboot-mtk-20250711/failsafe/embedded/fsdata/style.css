@@ -1505,6 +1505,10 @@ ul li {
     background: rgba(var(--primary-rgb), 0.15);
 }
 
+.hex-byte.in-range {
+    background: rgba(var(--primary-rgb), 0.2);
+}
+
 .hex-byte.selected {
     background: rgba(var(--primary-rgb), 0.4);
     color: #fff;
@@ -1518,6 +1522,10 @@ ul li {
 
 .hex-byte.selected.modified {
     background: #FF9800;
+}
+
+.hex-byte.in-range.modified {
+    background: rgba(76, 175, 80, 0.45);
 }
 
 .hex-overlay-input {

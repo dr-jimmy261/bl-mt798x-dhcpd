@@ -54,6 +54,32 @@ function flashPadHex(value, width) {
 let flashHexBytes = [];
 let flashHexModified = new Set();
 let flashSelectedByte = -1;
+let flashSelectionStart = -1;   /* anchor of range selection */
+let flashSelectionEnd = -1;     /* other end of range selection */
+let flashIsDragging = false;
+let flashDragAnchor = -1;
+const FLASH_MAX_SELECTION = 256; /* max bytes selectable at once */
+
+/* Return sorted selection range { start, end, count }, or null if no range */
+function flashGetSelectionRange() {
+    if (flashSelectionStart < 0 || flashSelectionEnd < 0) return null;
+    const lo = Math.min(flashSelectionStart, flashSelectionEnd);
+    const hi = Math.max(flashSelectionStart, flashSelectionEnd);
+    return { start: lo, end: hi, count: hi - lo + 1 };
+}
+
+/* Set both ends of the range, clamping to FLASH_MAX_SELECTION */
+function flashSetSelectionRange(anchor, cursor) {
+    const maxEnd = anchor + FLASH_MAX_SELECTION - 1;
+    const minEnd = anchor - FLASH_MAX_SELECTION + 1;
+    const clamped = cursor < anchor ? Math.max(cursor, minEnd) : Math.min(cursor, maxEnd);
+    flashSelectionStart = anchor;
+    flashSelectionEnd = clamped;
+    flashSelectedByte = cursor;
+    flashRenderHexGrid();
+    const inp = document.getElementById("flash_hex_input");
+    if (inp) { inp.value = ""; inp.focus(); }
+}
 
 /* Serialize byte array to space-separated hex string */
 function flashHexBytesToHexStr() {
@@ -83,6 +109,7 @@ function flashEnsureHexSelected() {
 function flashRenderHexGrid() {
     const grid = document.getElementById("flash_hex_grid");
     if (!grid) return;
+    const range = flashGetSelectionRange();
     grid.innerHTML = "";
     for (let row = 0; row < flashHexBytes.length; row += 16) {
         const rowDiv = document.createElement("div");
@@ -93,6 +120,8 @@ function flashRenderHexGrid() {
             span.className = "hex-byte";
             span.dataset.index = idx;
             span.textContent = flashPadHex(flashHexBytes[idx], 2);
+            const inRange = range && idx >= range.start && idx <= range.end;
+            if (inRange) span.classList.add("in-range");
             if (idx === flashSelectedByte) span.classList.add("selected");
             if (flashHexModified.has(idx)) span.classList.add("modified");
             rowDiv.appendChild(span);
@@ -125,10 +154,12 @@ function flashRenderHexViews() {
     asciiEl.textContent = asciiLines.join("").replace(/\n$/, "");
 }
 
-/* Select a byte and focus the hidden input */
+/* Select a byte and focus the hidden input (single-point, resets range) */
 function flashSelectByte(index) {
     if (index < 0 || index >= flashHexBytes.length) return;
     flashSelectedByte = index;
+    flashSelectionStart = index;
+    flashSelectionEnd = index;
     if (document.getElementById("flash_hex_input")) document.getElementById("flash_hex_input").value = "";
     flashRenderHexGrid();
     flashRenderHexViews();
@@ -197,6 +228,7 @@ function flashHandleHexKey(e) {
     if (flashHexBytes.length === 0) return;
     flashEnsureHexSelected();
     const key = e.key;
+    const prev = flashSelectedByte;
     let consumed = true;
     if (key === "ArrowRight")       flashSelectedByte = Math.min(flashSelectedByte + 1, flashHexBytes.length - 1);
     else if (key === "ArrowLeft")   flashSelectedByte = Math.max(flashSelectedByte - 1, 0);
@@ -210,13 +242,25 @@ function flashHandleHexKey(e) {
     else if (key === "Escape")      { consumed = false; document.getElementById("flash_hex_input").blur(); }
     else consumed = false;
 
-    if (consumed) {
+    if (consumed && flashSelectedByte !== prev) {
         e.preventDefault();
-        flashSelectByte(flashSelectedByte);
+        const inp = document.getElementById("flash_hex_input");
+        if (inp) inp.value = "";
+        if (e.shiftKey) {
+            if (flashSelectionStart < 0) flashSelectionStart = prev;
+            flashSelectionEnd = flashSelectedByte;
+        } else {
+            flashSelectionStart = flashSelectedByte;
+            flashSelectionEnd = flashSelectedByte;
+        }
+        flashRenderHexGrid();
+        flashRenderHexViews();
+        flashFocusHexInput();
+        flashScrollToByte(flashSelectedByte);
     }
 }
 
-/* ── Hex input: capture typed hex chars, commit when 2 chars, auto-advance ── */
+/* ── Hex input: single byte or fill selected range ── */
 function flashHandleHexInput(e) {
     if (flashHexBytes.length === 0) return;
     flashEnsureHexSelected();
@@ -229,11 +273,20 @@ function flashHandleHexInput(e) {
     if (val.length === 2) {
         const byteVal = parseInt(val, 16);
         if (!isNaN(byteVal)) {
-            flashHexBytes[flashSelectedByte] = byteVal;
-            flashHexModified.add(flashSelectedByte);
+            const range = flashGetSelectionRange();
+            if (range && range.count > 1) {
+                for (let i = range.start; i <= range.end; i++) {
+                    flashHexBytes[i] = byteVal;
+                    flashHexModified.add(i);
+                }
+                flashSetStatus("Filled " + range.count + " bytes");
+            } else {
+                flashHexBytes[flashSelectedByte] = byteVal;
+                flashHexModified.add(flashSelectedByte);
+            }
         }
         inp.value = "";
-        // auto-advance
+        // auto-advance (skip over range if multi-selected)
         if (flashSelectedByte + 1 < flashHexBytes.length) {
             flashSelectedByte++;
             flashSelectByte(flashSelectedByte);
@@ -245,12 +298,45 @@ function flashHandleHexInput(e) {
     }
 }
 
-/* Handle click on the hex grid */
+/* ── Mouse drag selection ── */
+function flashHexByteAtPoint(clientX, clientY) {
+    const elem = document.elementFromPoint(clientX, clientY);
+    if (!elem) return -1;
+    const target = elem.closest(".hex-byte");
+    if (!target) return -1;
+    return parseInt(target.dataset.index, 10);
+}
+
+function flashHexGridMouseDown(e) {
+    const idx = flashHexByteAtPoint(e.clientX, e.clientY);
+    if (idx < 0 || idx >= flashHexBytes.length) return;
+    e.preventDefault();
+    flashIsDragging = true;
+    flashDragAnchor = idx;
+    flashSetSelectionRange(idx, idx);
+    document.addEventListener("mousemove", flashHexGridMouseMove);
+    document.addEventListener("mouseup", flashHexGridMouseUp);
+}
+
+function flashHexGridMouseMove(e) {
+    if (!flashIsDragging) return;
+    const idx = flashHexByteAtPoint(e.clientX, e.clientY);
+    if (idx < 0 || idx >= flashHexBytes.length) return;
+    flashSetSelectionRange(flashDragAnchor, idx);
+}
+
+function flashHexGridMouseUp(e) {
+    flashIsDragging = false;
+    document.removeEventListener("mousemove", flashHexGridMouseMove);
+    document.removeEventListener("mouseup", flashHexGridMouseUp);
+    flashFocusHexInput();
+}
+
+/* Handle click on the hex grid (single click = single select, drag = range) */
 function flashHexGridClick(e) {
-    const target = e.target.closest(".hex-byte");
-    if (!target) return;
-    const idx = parseInt(target.dataset.index, 10);
-    if (!isNaN(idx) && idx >= 0 && idx < flashHexBytes.length) {
+    if (flashIsDragging) return;
+    const idx = flashHexByteAtPoint(e.clientX, e.clientY);
+    if (idx >= 0 && idx < flashHexBytes.length) {
         flashSelectByte(idx);
     }
 }
@@ -409,6 +495,7 @@ function flashInit() {
     flashSetStatus("");
 
     if (gridElement) {
+        gridElement.addEventListener("mousedown", flashHexGridMouseDown);
         gridElement.addEventListener("click", flashHexGridClick);
         gridElement.addEventListener("scroll", flashSyncScroll);
     }
@@ -550,6 +637,8 @@ async function flashRead() {
         flashHexBytes = flashHexStrToBytes(payload.data || "");
         flashHexModified = new Set();
         flashSelectedByte = flashHexBytes.length > 0 ? 0 : -1;
+        flashSelectionStart = flashSelectedByte;
+        flashSelectionEnd = flashSelectedByte;
         flashRenderHexGrid();
         flashRenderHexViews();
         flashSetStatus(t("flash.status.done"));
