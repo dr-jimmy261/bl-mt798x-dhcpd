@@ -664,6 +664,8 @@ function flashInit() {
     });
 }
 
+const FLASH_READ_CHUNK_SIZE = 256 * 1024; /* must match backend FLASH_READ_CHUNK */
+
 async function flashRead() {
     const targetSelect = document.getElementById("flash_target");
     const startInput = document.getElementById("flash_start");
@@ -678,39 +680,64 @@ async function flashRead() {
         return;
     }
     try {
-        flashSetStatus(t("flash.status.reading"));
-        const formData = new FormData();
-        formData.append("op", "read");
-        formData.append("storage", "auto");
-        formData.append("target", targetSelect.value);
-        formData.append("start", startInput.value);
-        formData.append("end", endInput.value);
-        const response = await fetch("/flash/read", { method: "POST", body: formData });
-        const responseText = await response.text();
-        if (!response.ok) {
-            flashSetStatus(t("flash.status.http") + " " + response.status + (responseText ? ": " + responseText : ""));
+        const totalSize = parseUserLen(endInput.value) - parseUserLen(startInput.value);
+        if (totalSize <= 0) {
+            alert(t("flash.error.bad_range"));
             return;
         }
-        let payload;
-        try { payload = JSON.parse(responseText); } catch (error) { flashSetStatus(t("flash.status.error") + " parse"); return; }
-        if (!payload || !payload.ok) {
-            flashSetStatus(t("flash.status.error") + " " + (payload && payload.error ? payload.error : ""));
-            return;
-        }
+        const totalChunks = Math.ceil(totalSize / FLASH_READ_CHUNK_SIZE);
         flashReadBase = parseUserLen(startInput.value);
-        flashHexBytes = flashHexStrToBytes(payload.data || "");
+        flashHexBytes = new Array(totalSize).fill(0);
         flashHexModified = new Set();
+        flashTotalPages = Math.ceil(totalSize / FLASH_PAGE_SIZE);
         flashCurrentPage = 0;
-        flashTotalPages = Math.ceil(flashHexBytes.length / FLASH_PAGE_SIZE);
-        flashSelectedByte = flashHexBytes.length > 0 ? 0 : -1;
-        flashSelectionStart = flashSelectedByte;
-        flashSelectionEnd = flashSelectedByte;
-        flashRenderHexGrid();
-        flashRenderHexViews();
+
+        /* optional: warn for large reads */
+        if (totalSize > 1024 * 1024 && !confirm(totalChunks + " chunk" + (totalChunks > 1 ? "s" : "") + " (" + bytesToHuman(totalSize) + ") may be slow. Continue?"))
+            return;
+
+        for (var c = 0; c < totalChunks; c++) {
+            flashSetStatus(t("flash.status.reading") + " (" + (c + 1) + "/" + totalChunks + ")");
+            const formData = new FormData();
+            formData.append("op", "read");
+            formData.append("storage", "auto");
+            formData.append("target", targetSelect.value);
+            formData.append("start", startInput.value);
+            formData.append("end", endInput.value);
+            formData.append("chunk", String(c));
+            const response = await fetch("/flash/read", { method: "POST", body: formData });
+            const responseText = await response.text();
+            if (!response.ok) {
+                flashSetStatus(t("flash.status.http") + " " + response.status + (responseText ? ": " + responseText : ""));
+                return;
+            }
+            var payload;
+            try { payload = JSON.parse(responseText); } catch (error) {
+                flashSetStatus(t("flash.status.error") + " parse");
+                return;
+            }
+            if (!payload || !payload.ok) {
+                flashSetStatus(t("flash.status.error") + " " + (payload && payload.error ? payload.error : ""));
+                return;
+            }
+            /* copy chunk data into full byte array */
+            var chunkBytes = flashHexStrToBytes(payload.data || "");
+            var chunkOffset = c * FLASH_READ_CHUNK_SIZE;
+            for (var i = 0; i < chunkBytes.length; i++)
+                flashHexBytes[chunkOffset + i] = chunkBytes[i];
+            /* render first page immediately so user sees something */
+            if (c === 0) {
+                flashSelectedByte = flashHexBytes.length > 0 ? 0 : -1;
+                flashSelectionStart = flashSelectedByte;
+                flashSelectionEnd = flashSelectedByte;
+                flashRenderHexGrid();
+                flashRenderHexViews();
+            }
+        }
         flashUpdatePageControls();
         const pageCtl = document.getElementById("flash_page_controls");
         if (pageCtl) pageCtl.style.display = flashTotalPages > 1 ? "flex" : "none";
-        flashSetStatus(t("flash.status.done") + (flashHexBytes.length > 4096 ? " (" + flashHexBytes.length + " bytes)" : ""));
+        flashSetStatus(t("flash.status.done") + " (" + flashHexBytes.length + " bytes)");
     } catch (error) {
         flashSetStatus(t("flash.status.error") + " " + (error && error.message ? error.message : String(error)));
     }

@@ -37,6 +37,12 @@
 
 #include "../failsafe_internal.h"
 
+/* Max bytes to read per /flash/read request in chunked mode.
+ * Each chunk is hex-encoded (3× expansion) + JSON overhead,
+ * so 256 KiB → ~770 KiB JSON, safe for U‑Boot's heap.
+ */
+#define FLASH_READ_CHUNK  (256 * 1024)
+
 /* ------------------------------------------------------------------ */
 /*  Static helpers                                                     */
 /* ------------------------------------------------------------------ */
@@ -448,11 +454,14 @@ void flash_handler(enum httpd_uri_handler_status status,
 	}
 
 	if (!strcmp(op, "read")) {
-		struct httpd_form_value *startv, *endv;
+		struct httpd_form_value *startv, *endv, *chunkv;
 		struct flash_target tgt;
 		u8 *buf = NULL;
 		char *hex = NULL;
-		size_t len, hex_len = 0;
+		size_t len, read_len, hex_len = 0;
+		u64 read_start;
+		int chunk = -1;
+		bool has_chunk;
 
 		ret = flash_parse_storage_target(request, storage_sel,
 						  sizeof(storage_sel),
@@ -474,16 +483,34 @@ void flash_handler(enum httpd_uri_handler_status status,
 		if (!len)
 			goto bad_req;
 
+		chunkv = httpd_request_find_value(request, "chunk");
+		has_chunk = chunkv && chunkv->data && chunkv->data[0];
+
+		if (has_chunk)
+			chunk = simple_strtoul(chunkv->data, NULL, 0);
+
+		if (has_chunk) {
+			read_start = start + (u64)chunk * FLASH_READ_CHUNK;
+			read_len = (size_t)min((u64)FLASH_READ_CHUNK,
+					       end - read_start);
+		} else {
+			read_start = start;
+			read_len = len;
+		}
+
+		if (!read_len)
+			goto bad_req;
+
 		ret = flash_open_target(storage_sel, target_name, &tgt);
 		if (ret)
 			goto bad_target;
 
-		if (end > tgt.size) {
+		if (read_start + read_len > tgt.size) {
 			flash_close_target(&tgt);
 			goto bad_range;
 		}
 
-		buf = malloc(len);
+		buf = malloc(read_len);
 		if (!buf) {
 			flash_close_target(&tgt);
 			goto oom;
@@ -492,9 +519,9 @@ void flash_handler(enum httpd_uri_handler_status status,
 		if (tgt.src == FAILSAFE_SRC_MTD) {
 #ifdef CONFIG_MTD
 			size_t readsz = 0;
-			ret = mtd_read_skip_bad(tgt.mtd, start, len,
-				tgt.mtd->size - start, &readsz, buf);
-			if (ret || readsz != len) {
+			ret = mtd_read_skip_bad(tgt.mtd, read_start, read_len,
+				tgt.mtd->size - read_start, &readsz, buf);
+			if (ret || readsz != read_len) {
 				free(buf);
 				flash_close_target(&tgt);
 				goto io_err;
@@ -507,7 +534,7 @@ void flash_handler(enum httpd_uri_handler_status status,
 		} else {
 #ifdef CONFIG_MTK_BOOTMENU_MMC
 			ret = mmc_read_generic(CONFIG_MTK_BOOTMENU_MMC_DEV_INDEX, 0,
-				tgt.base + start, buf, len);
+				tgt.base + read_start, buf, read_len);
 			if (ret) {
 				free(buf);
 				flash_close_target(&tgt);
@@ -520,23 +547,39 @@ void flash_handler(enum httpd_uri_handler_status status,
 #endif
 		}
 
-		hex = flash_hex_dump(buf, len, &hex_len);
+		hex = flash_hex_dump(buf, read_len, &hex_len);
 		free(buf);
 		flash_close_target(&tgt);
 		if (!hex)
 			goto oom;
 
-		json = malloc(hex_len + 160);
+		json = malloc(hex_len + 320);
 		if (!json) {
 			free(hex);
 			goto oom;
 		}
 
-		snprintf(json, hex_len + 160,
-			"{\"ok\":true,\"start\":\"0x%llx\",\"end\":\"0x%llx\",\"size\":%zu,\"data\":\"%s\"}\n",
-			(unsigned long long)start,
-			(unsigned long long)end,
-			len, hex);
+		if (has_chunk) {
+			size_t total_chunks = (len + FLASH_READ_CHUNK - 1)
+					      / FLASH_READ_CHUNK;
+			snprintf(json, hex_len + 320,
+				"{\"ok\":true,\"start\":\"0x%llx\",\"end\":\"0x%llx\","
+				"\"size\":%zu,\"chunk\":%d,\"chunk_total\":%zu,"
+				"\"chunk_offset\":\"0x%llx\",\"chunk_size\":%zu,"
+				"\"data\":\"%s\"}\n",
+				(unsigned long long)start,
+				(unsigned long long)end,
+				len, chunk, total_chunks,
+				(unsigned long long)read_start, read_len,
+				hex);
+		} else {
+			snprintf(json, hex_len + 320,
+				"{\"ok\":true,\"start\":\"0x%llx\",\"end\":\"0x%llx\","
+				"\"size\":%zu,\"data\":\"%s\"}\n",
+				(unsigned long long)start,
+				(unsigned long long)end,
+				len, hex);
+		}
 		free(hex);
 
 		failsafe_http_reply_json_alloc(response, 200, json, json);
