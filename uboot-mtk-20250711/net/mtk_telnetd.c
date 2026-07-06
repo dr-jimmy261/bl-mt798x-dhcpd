@@ -82,6 +82,7 @@ static bool is_network_command(const char *cmd)
 #define TELNETD_OUTBUF_SIZE	8192	/* Max console output per cmd	*/
 #define TELNETD_CMD_MAX		512	/* Max command line length	*/
 #define TELNETD_EDIT_BUF_SIZE	512	/* Max accumulated edit responses */
+#define TELNETD_HIST_MAX	16	/* Command history entries	*/
 
 /* ------------------------------------------------------------------
  * Session state
@@ -113,6 +114,15 @@ struct telnetd_pdata {
 				 * prevents re-entrant telnetd_execute() calls
 				 * triggered by mtk_tcp_periodic_check()
 				 * running inside net_loop(). */
+
+	u32 cmdpos;		/* cursor position within cmdbuf (0..cmdlen) */
+
+	/* Command history ring buffer */
+	char history[TELNETD_HIST_MAX][TELNETD_CMD_MAX];
+	u32 hist_count;		/* total entries written (capped at HIST_MAX) */
+	u32 hist_head;		/* next write position (ring index) */
+	s32 hist_cur;		/* current nav position, -1 = not navigating */
+	char hist_saved[TELNETD_CMD_MAX]; /* saved cmd when navigating up */
 };
 
 /* ------------------------------------------------------------------
@@ -456,6 +466,200 @@ static void telnetd_edit_backspace(struct telnetd_pdata *pdata)
 	}
 }
 
+/* ------------------------------------------------------------------
+ * Line-editing helpers (cursor movement, redraw, history)
+ * ------------------------------------------------------------------ */
+
+/* Append raw bytes to edit_outbuf. Returns false if not enough space. */
+static bool telnetd_edit_append(struct telnetd_pdata *pdata,
+				const char *data, u32 len)
+{
+	if (pdata->edit_outbuf_len + len > TELNETD_EDIT_BUF_SIZE)
+		return false;
+	memcpy(pdata->edit_outbuf + pdata->edit_outbuf_len, data, len);
+	pdata->edit_outbuf_len += len;
+	return true;
+}
+
+/* Move cursor one position left */
+static void telnetd_cursor_left(struct telnetd_pdata *pdata)
+{
+	if (pdata->cmdpos == 0)
+		return;
+	pdata->cmdpos--;
+	telnetd_edit_append(pdata, "\x1b[D", 3);
+}
+
+/* Move cursor one position right */
+static void telnetd_cursor_right(struct telnetd_pdata *pdata)
+{
+	if (pdata->cmdpos >= pdata->cmdlen)
+		return;
+	pdata->cmdpos++;
+	telnetd_edit_append(pdata, "\x1b[C", 3);
+}
+
+/*
+ * Redraw tail of cmd line from 'from' and reposition cursor.
+ * After insert/delete mid-line, the display from 'from' is stale;
+ * we resend those characters and move the cursor back.
+ *
+ * cursor_offset: +N = cursor is N chars right of 'from' after redraw.
+ */
+static void telnetd_redraw_tail(struct telnetd_pdata *pdata, u32 from,
+				s32 cursor_offset)
+{
+	u32 tail = pdata->cmdlen - from;
+	u32 i;
+
+	/* Space check: tail chars + cursor escape (max 8 bytes) */
+	if (pdata->edit_outbuf_len + tail + 8 > TELNETD_EDIT_BUF_SIZE)
+		return;
+
+	for (i = from; i < pdata->cmdlen; i++)
+		pdata->edit_outbuf[pdata->edit_outbuf_len++] =
+			(unsigned char)pdata->cmdbuf[i];
+
+	/* Move cursor back */
+	{
+		s32 newpos = (s32)from + cursor_offset;
+		s32 back = (s32)pdata->cmdlen - newpos;
+		char buf[8];
+
+		if (back > 0 && back <= 999) {
+			int n = snprintf(buf, sizeof(buf), "\x1b[%dD",
+					 (int)back);
+
+			if (n > 0) {
+				memcpy(pdata->edit_outbuf +
+				       pdata->edit_outbuf_len, buf,
+				       (u32)n);
+				pdata->edit_outbuf_len += (u32)n;
+			}
+		}
+	}
+}
+
+/*
+ * Clear the current line and redraw prompt + full command.
+ * Used when navigating history (up/down arrows) replaces the
+ * entire command line.
+ */
+static void telnetd_redraw_full_line(struct telnetd_pdata *pdata,
+				     const char *prompt)
+{
+	u32 plen = strlen(prompt);
+	u32 total = 4 + plen + pdata->cmdlen;
+
+	if (pdata->edit_outbuf_len + total + 8 > TELNETD_EDIT_BUF_SIZE)
+		return;
+
+	/* \r – carriage return */
+	pdata->edit_outbuf[pdata->edit_outbuf_len++] = '\r';
+	/* ESC [ K – clear from cursor to end of line */
+	pdata->edit_outbuf[pdata->edit_outbuf_len++] = '\x1b';
+	pdata->edit_outbuf[pdata->edit_outbuf_len++] = '[';
+	pdata->edit_outbuf[pdata->edit_outbuf_len++] = 'K';
+	/* Print prompt */
+	memcpy(pdata->edit_outbuf + pdata->edit_outbuf_len, prompt, plen);
+	pdata->edit_outbuf_len += plen;
+	/* Print command */
+	if (pdata->cmdlen) {
+		memcpy(pdata->edit_outbuf + pdata->edit_outbuf_len,
+		       pdata->cmdbuf, pdata->cmdlen);
+		pdata->edit_outbuf_len += pdata->cmdlen;
+	}
+}
+
+/* Save a command to the history ring buffer */
+static void telnetd_history_save(struct telnetd_pdata *pdata, const char *cmd)
+{
+	u32 idx;
+
+	if (!cmd[0])
+		return;
+
+	idx = pdata->hist_head;
+	strncpy(pdata->history[idx], cmd, TELNETD_CMD_MAX - 1);
+	pdata->history[idx][TELNETD_CMD_MAX - 1] = '\0';
+
+	pdata->hist_head = (idx + 1) % TELNETD_HIST_MAX;
+	if (pdata->hist_count < TELNETD_HIST_MAX)
+		pdata->hist_count++;
+
+	pdata->hist_cur = -1;  /* exit history navigation */
+}
+
+/*
+ * Calculate ring-buffer index for history entry number 'n' (0 = newest).
+ * n = pdata->hist_cur (0..hist_count-1 from newest to oldest).
+ */
+static u32 telnetd_history_idx(struct telnetd_pdata *pdata, s32 n)
+{
+	return (pdata->hist_head + TELNETD_HIST_MAX - 1 -
+		(u32)(pdata->hist_count - 1 - n)) % TELNETD_HIST_MAX;
+}
+
+/* Recall previous command from history (up arrow) */
+static void telnetd_history_prev(struct mtk_tcp_cb_data *cbd,
+				 struct telnetd_pdata *pdata)
+{
+	const char *prompt = telnetd_get_prompt();
+
+	if (pdata->hist_count == 0)
+		return;
+
+	/* First press: save current line, start navigation from newest */
+	if (pdata->hist_cur < 0) {
+		strncpy(pdata->hist_saved, pdata->cmdbuf,
+			TELNETD_CMD_MAX - 1);
+		pdata->hist_saved[TELNETD_CMD_MAX - 1] = '\0';
+		pdata->hist_cur = (s32)pdata->hist_count - 1;
+	} else {
+		pdata->hist_cur--;
+		if (pdata->hist_cur < 0)
+			pdata->hist_cur = (s32)pdata->hist_count - 1;
+	}
+
+	{
+		u32 idx = telnetd_history_idx(pdata, pdata->hist_cur);
+
+		strncpy(pdata->cmdbuf, pdata->history[idx],
+			TELNETD_CMD_MAX - 1);
+		pdata->cmdbuf[TELNETD_CMD_MAX - 1] = '\0';
+	}
+	pdata->cmdlen = strlen(pdata->cmdbuf);
+	telnetd_redraw_full_line(pdata, prompt);
+}
+
+/* Recall next command from history (down arrow) */
+static void telnetd_history_next(struct mtk_tcp_cb_data *cbd,
+				 struct telnetd_pdata *pdata)
+{
+	const char *prompt = telnetd_get_prompt();
+
+	if (pdata->hist_cur < 0)
+		return;
+
+	pdata->hist_cur++;
+	if (pdata->hist_cur >= (s32)pdata->hist_count) {
+		/* Past the end: restore the saved pre-navigation text */
+		pdata->hist_cur = -1;
+		strncpy(pdata->cmdbuf, pdata->hist_saved,
+			TELNETD_CMD_MAX - 1);
+		pdata->cmdbuf[TELNETD_CMD_MAX - 1] = '\0';
+	} else {
+		u32 idx = telnetd_history_idx(pdata, pdata->hist_cur);
+
+		strncpy(pdata->cmdbuf, pdata->history[idx],
+			TELNETD_CMD_MAX - 1);
+		pdata->cmdbuf[TELNETD_CMD_MAX - 1] = '\0';
+	}
+
+	pdata->cmdlen = strlen(pdata->cmdbuf);
+	telnetd_redraw_full_line(pdata, prompt);
+}
+
 /**
  * telnetd_send_prompt() – send a prompt with preceding CRLF.
  *
@@ -536,6 +740,9 @@ static void telnetd_execute(struct mtk_tcp_cb_data *cbd,
 	run_command(cmd, 0);
 
 	pdata->executing = false;
+
+	/* Save non-empty commands to history */
+	telnetd_history_save(pdata, cmd);
 
 	/*
 	 * If a network command was executed, net_loop() inside it called
@@ -695,6 +902,7 @@ static void telnetd_process_input(struct mtk_tcp_cb_data *cbd)
 				pdata->skip_lf = true;
 			telnetd_execute(cbd, pdata->cmdbuf);
 			pdata->cmdlen = 0;
+			pdata->cmdpos = 0;
 			pdata->cmdbuf[0] = '\0';
 			/* Stop if we entered RESPONDING */
 			if (pdata->state != TELNETD_S_IDLE)
@@ -708,11 +916,13 @@ static void telnetd_process_input(struct mtk_tcp_cb_data *cbd)
 			    pdata->inbuf[i + 1] == '[') {
 				/* CSI: ESC [ ... terminator (0x40-0x7E) */
 				u32 j = i + 2;
+				unsigned char term = 0;
 
 				while (j < pdata->inbuf_size) {
 					unsigned char t = pdata->inbuf[j];
 
 					if (t >= 0x40 && t <= 0x7e) {
+						term = t;
 						j++;
 						break; /* found terminator */
 					}
@@ -720,12 +930,49 @@ static void telnetd_process_input(struct mtk_tcp_cb_data *cbd)
 						break; /* malformed */
 					j++;
 				}
-				if (j > i + 2) {
-					i = j;
-					continue;
+
+				if (!term) {
+					/* Incomplete — keep for next rx */
+					break;
 				}
-				/* Incomplete — keep for next rx */
-				break;
+
+				/* Simple 3-byte CSI (ESC [ X): arrow keys,
+				 * Home, End */
+				if (j == i + 3) {
+					switch (term) {
+					case 'D': /* Left arrow */
+						pdata->hist_cur = -1;
+						telnetd_cursor_left(pdata);
+						break;
+					case 'C': /* Right arrow */
+						pdata->hist_cur = -1;
+						telnetd_cursor_right(pdata);
+						break;
+					case 'A': /* Up arrow */
+						telnetd_history_prev(cbd, pdata);
+						break;
+					case 'B': /* Down arrow */
+						telnetd_history_next(cbd, pdata);
+						break;
+					case 'H': /* Home (ESC [ H) */
+						pdata->hist_cur = -1;
+						while (pdata->cmdpos > 0)
+							telnetd_cursor_left(pdata);
+						break;
+					case 'F': /* End (ESC [ F) */
+						pdata->hist_cur = -1;
+						while (pdata->cmdpos < pdata->cmdlen)
+							telnetd_cursor_right(pdata);
+						break;
+					default:
+						/* Unknown CSI – skip */
+						break;
+					}
+				}
+				/* Non-3-byte CSI (e.g. Home ESC [ 1 ~) –
+				 * skip for now */
+				i = j;
+				continue;
 			}
 			/* Lone ESC or unknown escape — skip it */
 			i++;
@@ -734,9 +981,27 @@ static void telnetd_process_input(struct mtk_tcp_cb_data *cbd)
 
 		/* ---- Backspace / DEL ---- */
 		if (c == '\b' || c == 0x7f) {
-			if (pdata->cmdlen > 0) {
-				pdata->cmdlen--;
-				telnetd_edit_backspace(pdata);
+			pdata->hist_cur = -1;
+			if (pdata->cmdpos > 0) {
+				if (pdata->cmdpos == pdata->cmdlen) {
+					/* At end: simple backspace */
+					pdata->cmdlen--;
+					pdata->cmdpos--;
+					telnetd_edit_backspace(pdata);
+				} else {
+					/* Mid-line: delete char before
+					 * cursor, shift tail left, redraw */
+					u32 delpos = pdata->cmdpos - 1;
+
+					memmove(pdata->cmdbuf + delpos,
+						pdata->cmdbuf + pdata->cmdpos,
+						pdata->cmdlen -
+						pdata->cmdpos);
+					pdata->cmdlen--;
+					pdata->cmdpos--;
+					/* Repaint from delpos */
+					telnetd_redraw_tail(pdata, delpos, 1);
+				}
 			}
 			i++;
 			continue;
@@ -749,7 +1014,9 @@ static void telnetd_process_input(struct mtk_tcp_cb_data *cbd)
 			u32 plen = strlen(prompt);
 			u32 need = 6 + plen;
 
+			pdata->hist_cur = -1;
 			pdata->cmdlen = 0;
+			pdata->cmdpos = 0;
 			pdata->cmdbuf[0] = '\0';
 			if (pdata->edit_outbuf_len + need <=
 			    TELNETD_EDIT_BUF_SIZE) {
@@ -772,6 +1039,7 @@ static void telnetd_process_input(struct mtk_tcp_cb_data *cbd)
 
 		if (c == '\x15') {
 			/* Ctrl+U — clear entire line */
+			pdata->hist_cur = -1;
 			while (pdata->cmdlen > 0 &&
 			       pdata->edit_outbuf_len + 3 <=
 			       TELNETD_EDIT_BUF_SIZE) {
@@ -779,6 +1047,7 @@ static void telnetd_process_input(struct mtk_tcp_cb_data *cbd)
 				telnetd_edit_backspace(pdata);
 			}
 			pdata->cmdlen = 0;
+			pdata->cmdpos = 0;
 			pdata->cmdbuf[0] = '\0';
 			i++;
 			continue;
@@ -786,6 +1055,7 @@ static void telnetd_process_input(struct mtk_tcp_cb_data *cbd)
 
 		if (c == '\x17') {
 			/* Ctrl+W — delete previous word */
+			pdata->hist_cur = -1;
 			while (pdata->cmdlen > 0 &&
 			       pdata->cmdbuf[pdata->cmdlen - 1] == ' ') {
 				if (pdata->edit_outbuf_len + 3 >
@@ -819,11 +1089,30 @@ static void telnetd_process_input(struct mtk_tcp_cb_data *cbd)
 		}
 
 		/* ---- Regular character ---- */
+		pdata->hist_cur = -1;
 		if (pdata->cmdlen < TELNETD_CMD_MAX - 1) {
-			pdata->cmdbuf[pdata->cmdlen++] = c;
-			/* Echo back to client (WILL ECHO mode) */
-			if (pdata->edit_outbuf_len < TELNETD_EDIT_BUF_SIZE)
-				pdata->edit_outbuf[pdata->edit_outbuf_len++] = c;
+			if (pdata->cmdpos == pdata->cmdlen) {
+				/* Append at end */
+				pdata->cmdbuf[pdata->cmdlen++] = c;
+				pdata->cmdpos++;
+				/* Echo back to client (WILL ECHO mode) */
+				if (pdata->edit_outbuf_len <
+				    TELNETD_EDIT_BUF_SIZE)
+					pdata->edit_outbuf[
+					  pdata->edit_outbuf_len++] = c;
+			} else {
+				/* Insert at cmdpos: shift tail right,
+				 * insert char, redraw from cmdpos */
+				memmove(pdata->cmdbuf + pdata->cmdpos + 1,
+					pdata->cmdbuf + pdata->cmdpos,
+					pdata->cmdlen - pdata->cmdpos);
+				pdata->cmdbuf[pdata->cmdpos] = c;
+				pdata->cmdlen++;
+				pdata->cmdpos++;
+				/* Repaint from insertion point */
+				telnetd_redraw_tail(pdata,
+					pdata->cmdpos - 1, 1);
+			}
 		}
 		i++;
 	}
@@ -858,6 +1147,7 @@ static void telnetd_callback(struct mtk_tcp_cb_data *cbd)
 			mtk_tcp_close_conn(cbd->conn, 1);
 			break;
 		}
+		pdata->hist_cur = -1; /* calloc gives 0, we need -1 */
 
 		cbd->pdata = pdata;
 		mtk_tcp_conn_set_pdata(cbd->conn, pdata);
