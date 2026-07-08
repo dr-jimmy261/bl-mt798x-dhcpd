@@ -212,3 +212,9 @@ config MTD_SPI_NAND_ZBIT
 	default n
 	help
 	  Add support for various ZBIT SPI Nand flash chips
+
+config MTD_SPI_NAND_ZENTEL
+	bool "ZENTEL SPI flash support"
+	default n
+	help
+	  Add support for various ZENTEL SPI Nand flash chips

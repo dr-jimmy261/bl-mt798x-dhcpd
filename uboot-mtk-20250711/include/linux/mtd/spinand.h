@@ -332,6 +332,7 @@ extern const struct spinand_manufacturer xincun_spinand_manufacturer;
 extern const struct spinand_manufacturer xincun_6c_spinand_manufacturer;
 extern const struct spinand_manufacturer xtx_spinand_manufacturer;
 extern const struct spinand_manufacturer zbit_spinand_manufacturer;
+extern const struct spinand_manufacturer zentel_spinand_manufacturer;
 
 
 /**

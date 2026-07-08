@@ -34,3 +34,4 @@ spinand-$(CONFIG_MTD_SPI_NAND_WODPOSIT)				+= wodposit.o
 spinand-$(CONFIG_MTD_SPI_NAND_XINCUN)				+= xincun.o
 spinand-$(CONFIG_MTD_SPI_NAND_XTX)					+= xtx.o
 spinand-$(CONFIG_MTD_SPI_NAND_ZBIT)					+= zbit.o
+spinand-$(CONFIG_MTD_SPI_NAND_ZENTEL)				+= zentel.o
