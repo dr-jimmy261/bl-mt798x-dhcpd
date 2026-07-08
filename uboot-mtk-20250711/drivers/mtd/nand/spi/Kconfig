@@ -170,6 +170,12 @@ config MTD_SPI_NAND_TOSHIBA
 	help
 	  Add support for various TOSHIBA SPI Nand flash chips
 
+config MTD_SPI_NAND_TYM
+	bool "TYM SPI flash support"
+	default n
+	help
+	  Add support for various TYM SPI Nand flash chips
+
 config MTD_SPI_NAND_UNIM
 	bool "UNIM SPI flash support"
 	default n
