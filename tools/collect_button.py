@@ -246,9 +246,9 @@ def render_md(entries, outpath):
 def main():
     script_dir = os.path.dirname(os.path.abspath(__file__))
     default_dts_dir = os.path.join(
-        script_dir, "..", "..", "uboot-mtk-20250711", "arch", "arm", "dts"
+        script_dir, "..", "uboot-mtk-20250711", "arch", "arm", "dts"
     )
-    default_output_dir = os.path.join(script_dir, "..")
+    default_output_dir = os.path.join(script_dir, "..", "document")
 
     dts_dir = default_dts_dir
     outname = DEFAULT_OUTPUT_NAME

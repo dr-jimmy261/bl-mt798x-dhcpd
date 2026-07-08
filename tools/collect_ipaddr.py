@@ -145,8 +145,8 @@ def render_md(entries, outpath):
 
 def main():
 	script_dir = os.path.dirname(os.path.abspath(__file__))
-	default_config_dir = os.path.join(script_dir, "..", "..", "uboot-mtk-20250711", "configs")
-	default_output_dir = os.path.join(script_dir, "..")
+	default_config_dir = os.path.join(script_dir, "..", "uboot-mtk-20250711", "configs")
+	default_output_dir = os.path.join(script_dir, "..", "document")
 	default_outname = "ipaddr_summary.md"
 
 	config_dir = default_config_dir

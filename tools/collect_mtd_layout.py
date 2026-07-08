@@ -235,6 +235,8 @@ def collect_dts(dts_root: str) -> List[Dict[str, object]]:
         for fn in sorted(files):
             if not (fn.endswith(".dts") or fn.endswith(".dtsi")):
                 continue
+            if not fn.startswith(tuple(PLATFORMS)):
+                continue
             fp = os.path.join(root, fn)
             if not (os.path.isfile(fp) or os.path.islink(fp)):
                 continue
@@ -326,9 +328,9 @@ def render_md(entries: List[Dict[str, object]], outpath: str) -> str:
 
 def main() -> None:
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    default_uboot_root = os.path.join(script_dir, "..", "..", "uboot-mtk-20250711")
-    default_dts_root = os.path.join(default_uboot_root, "arch", "arm", "dts", "mediatek")
-    default_output_dir = os.path.join(script_dir, "..")
+    default_uboot_root = os.path.join(script_dir, "..", "uboot-mtk-20250711")
+    default_dts_root = os.path.join(default_uboot_root, "arch", "arm", "dts")
+    default_output_dir = os.path.join(script_dir, "..", "document")
     default_outname = DEFAULT_OUTPUT
 
     uboot_root = default_uboot_root
