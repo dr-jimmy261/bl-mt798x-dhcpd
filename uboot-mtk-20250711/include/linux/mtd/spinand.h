@@ -299,6 +299,7 @@ struct spinand_manufacturer {
 /* SPI NAND manufacturers */
 extern const struct spinand_manufacturer alliancememory_spinand_manufacturer;
 extern const struct spinand_manufacturer ato_spinand_manufacturer;
+extern const struct spinand_manufacturer ato_ad_spinand_manufacturer;
 extern const struct spinand_manufacturer biwin_spinand_manufacturer;
 extern const struct spinand_manufacturer chucun_spinand_manufacturer;
 extern const struct spinand_manufacturer dosilicon_spinand_manufacturer;
