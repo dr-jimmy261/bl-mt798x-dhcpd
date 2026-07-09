@@ -33,6 +33,19 @@ static const char *alt_partname_factory(const char *partname)
 	if (!strcmp(partname, "Factory"))
 		return "factory";
 
+//add fallback for mismatch partiton -- require CONFIG_MTK_RF_PART_AUTO=y in config
+	if (!strcmp(partname, "FIP"))
+		return "fip";
+
+	if (!strcmp(partname, "fip"))
+		return "FIP";
+
+	if (!strcmp(partname, "BL2"))
+		return "bl2";
+
+	if (!strcmp(partname, "bl2"))
+		return "BL2";
+
 	return NULL;
 }
 
